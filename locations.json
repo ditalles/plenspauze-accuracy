@@ -1,0 +1,10 @@
+[
+  { "naam": "Amsterdam",  "lat": 52.3676, "lon": 4.9041 },
+  { "naam": "Rotterdam",  "lat": 51.9244, "lon": 4.4777 },
+  { "naam": "Utrecht",    "lat": 52.0907, "lon": 5.1214 },
+  { "naam": "Groningen",  "lat": 53.2194, "lon": 6.5665 },
+  { "naam": "Eindhoven",  "lat": 51.4416, "lon": 5.4697 },
+  { "naam": "Maastricht", "lat": 50.8514, "lon": 5.6910 },
+  { "naam": "Zwolle",     "lat": 52.5168, "lon": 6.0830 },
+  { "naam": "Den Helder", "lat": 52.9563, "lon": 4.7601 }
+]

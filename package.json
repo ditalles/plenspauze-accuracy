@@ -1,0 +1,11 @@
+{
+  "name": "plenspauze-accuracy-logger",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Logt Plenspauze's neerslag-nowcast naast Buienradar + echte stationmetingen, voor backtesting van de voorspel-accuratesse.",
+  "scripts": {
+    "log": "node log.mjs",
+    "score": "node score.mjs"
+  }
+}
