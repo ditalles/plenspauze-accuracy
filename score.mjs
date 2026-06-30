@@ -55,6 +55,7 @@ function obsAt(loc, epoch) {
 
 // Voorspelpunt het dichtst bij horizon h (binnen ±10 min).
 function predAt(points, h) {
+  if (!points || !points.length) return null; // oude records zonder deze bron
   let best = null, bestD = Infinity;
   for (const p of points) {
     const d = Math.abs(p.mAhead - h);
@@ -65,10 +66,10 @@ function predAt(points, h) {
 
 // ── Scoren ───────────────────────────────────────────────────────────────────
 function blankStats() { return { n: 0, hit: 0, miss: 0, fa: 0, cn: 0, obsWet: 0 }; }
-const stats = {
-  ours: Object.fromEntries(HORIZONS.map((h) => [h, blankStats()])),
-  buienradar: Object.fromEntries(HORIZONS.map((h) => [h, blankStats()])),
-};
+const SOURCES = ['ours', 'knmi', 'buienradar'];
+const stats = Object.fromEntries(
+  SOURCES.map((s) => [s, Object.fromEntries(HORIZONS.map((h) => [h, blankStats()]))]),
+);
 
 let pairs = 0;
 for (const r of records) {
@@ -76,7 +77,7 @@ for (const r of records) {
     const obs = obsAt(r.loc, r.epoch + h * 60000);
     if (!obs) continue;
     const obsWet = obs.mmh >= WET;
-    for (const src of ['ours', 'buienradar']) {
+    for (const src of SOURCES) {
       const p = predAt(r[src], h);
       if (!p) continue;
       const predWet = p.mmh >= WET;
@@ -119,6 +120,7 @@ if (pairs < 20) {
 for (const h of HORIZONS) {
   console.log(`  ▸ ${h} min vooruit:`);
   console.log(row('Plenspauze', stats.ours[h]));
+  console.log(row('KNMI', stats.knmi[h]));
   console.log(row('Buienradar', stats.buienradar[h]));
   console.log('');
 }

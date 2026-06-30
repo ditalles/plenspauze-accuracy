@@ -48,9 +48,11 @@ async function fetchBuienradar(lat, lon, runEpoch) {
   });
 }
 
-async function fetchOurs(lat, lon, runEpoch) {
+// Open-Meteo per model. 'knmi_seamless' = wat Plenspauze gebruikt;
+// 'knmi_harmonie_arome_netherlands' = het rúwe officiële KNMI HARMONIE-model.
+async function fetchOpenMeteo(lat, lon, runEpoch, model) {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&minutely_15=precipitation,precipitation_probability&models=knmi_seamless` +
+    `&minutely_15=precipitation,precipitation_probability&models=${model}` +
     `&timezone=Europe%2FAmsterdam&forecast_minutely_15=10`;
   const r = await fetch(url);
   const j = await r.json();
@@ -101,8 +103,9 @@ try {
 const records = [];
 for (const loc of locations) {
   try {
-    const [ours, buienradar] = await Promise.all([
-      fetchOurs(loc.lat, loc.lon, runEpoch),
+    const [ours, knmi, buienradar] = await Promise.all([
+      fetchOpenMeteo(loc.lat, loc.lon, runEpoch, 'knmi_seamless'),
+      fetchOpenMeteo(loc.lat, loc.lon, runEpoch, 'knmi_harmonie_arome_netherlands'),
       fetchBuienradar(loc.lat, loc.lon, runEpoch),
     ]);
     const station = stations.length ? nearestStation(stations, loc.lat, loc.lon) : null;
@@ -114,13 +117,14 @@ for (const loc of locations) {
       lon: loc.lon,
       station,
       ours,
+      knmi,
       buienradar,
     });
-    const wetOurs = ours.some((p) => p.mAhead >= 0 && p.mAhead <= 120 && p.mmh >= WET_MMH);
-    const wetBr = buienradar.some((p) => p.mAhead >= 0 && p.mAhead <= 120 && p.mmh >= WET_MMH);
+    const wet = (arr) => arr.some((p) => p.mAhead >= 0 && p.mAhead <= 120 && p.mmh >= WET_MMH);
     console.log(
       `${loc.naam.padEnd(11)} nu:${station?.regenNu ?? '?'}mm/u  ` +
-      `onze 2u:${wetOurs ? 'REGEN' : 'droog'}  buienradar 2u:${wetBr ? 'REGEN' : 'droog'}`,
+      `Plenspauze:${wet(ours) ? 'REGEN' : 'droog'}  KNMI:${wet(knmi) ? 'REGEN' : 'droog'}  ` +
+      `Buienradar:${wet(buienradar) ? 'REGEN' : 'droog'}`,
     );
   } catch (e) {
     console.error(`${loc.naam}: mislukt — ${e.message}`);
