@@ -1,13 +1,15 @@
 name: nowcast-logger
 
-# Elke ~15 min een momentopname loggen. Let op: GitHub kan geplande runs onder
-# drukte uitstellen — de echte cadans ligt vaak rond 15–25 min. Prima voor backtest.
+# Zelf-pacende logger: één run draait ~5 uur en maakt INTERN elke 10 min een
+# opname (sleep-loop), i.p.v. te vertrouwen op GitHubs geplande cron — die wordt
+# voor sub-uurlijkse schema's zwaar uitgesteld. Een nieuwe run wordt elke 5 uur
+# gestart als opvolger; `concurrency` voorkomt overlap. Voor PUBLIEKE repo's zijn
+# de Action-minuten gratis/onbeperkt, dus dit mag continu draaien.
 on:
   schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch: {} # handmatig starten via de Actions-tab
+    - cron: '0 */5 * * *' # elke 5 uur een verse run starten
+  workflow_dispatch: {}
 
-# De job committeert de meting terug naar de repo.
 permissions:
   contents: write
 
@@ -18,6 +20,7 @@ concurrency:
 jobs:
   log:
     runs-on: ubuntu-latest
+    timeout-minutes: 340 # < 6u harde limiet
     steps:
       - uses: actions/checkout@v4
 
@@ -25,19 +28,23 @@ jobs:
         with:
           node-version: 20
 
-      - name: Momentopname loggen
-        run: node log.mjs
-
-      - name: Data terugcommitten
+      - name: Zelf-pacende logger (opname elke 10 min, ~5 uur lang)
         run: |
           git config user.name  "nowcast-logger"
           git config user.email "actions@users.noreply.github.com"
-          git add data/
-          if git diff --cached --quiet; then
-            echo "Geen nieuwe data."
-          else
-            git commit -m "log: momentopname $(date -u +%Y-%m-%dT%H:%MZ)"
-            # Rebase-pull tegen races met overlappende runs.
-            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
-            git push
-          fi
+          END=$(( $(date +%s) + 5*3600 ))   # ~5 uur loggen
+          N=0
+          while [ "$(date +%s)" -lt "$END" ]; do
+            node log.mjs || echo "log.mjs faalde, ga door"
+            git add data/
+            if ! git diff --cached --quiet; then
+              git commit -q -m "log: opname $(date -u +%Y-%m-%dT%H:%MZ)"
+              git pull --rebase --autostash -q origin "${GITHUB_REF_NAME}" || true
+              git push -q || echo "push faalde, volgende keer opnieuw"
+            fi
+            N=$((N+1))
+            echo "opname $N klaar — $(date -u +%H:%M:%SZ)"
+            # Stop niet net vóór het einde nog 10 min wachten.
+            [ "$(date +%s)" -lt "$END" ] && sleep 600
+          done
+          echo "Run klaar: $N opnames."
