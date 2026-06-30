@@ -6,5 +6,6 @@
   { "naam": "Eindhoven",  "lat": 51.4416, "lon": 5.4697 },
   { "naam": "Maastricht", "lat": 50.8514, "lon": 5.6910 },
   { "naam": "Zwolle",     "lat": 52.5168, "lon": 6.0830 },
-  { "naam": "Den Helder", "lat": 52.9563, "lon": 4.7601 }
+  { "naam": "Den Helder", "lat": 52.9563, "lon": 4.7601 },
+  { "naam": "Westzaan",   "lat": 52.4575, "lon": 4.7967 }
 ]
