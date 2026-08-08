@@ -16,7 +16,10 @@ const CLIENT_ID = process.env.WIWB_CLIENT_ID;
 const CLIENT_SECRET = process.env.WIWB_CLIENT_SECRET;
 const lat = parseFloat(process.argv[2] ?? '52.458'); // Westzaan
 const lon = parseFloat(process.argv[3] ?? '4.797');
-// Real-time voor een live check; voor de gouden meetlat: ...Final.Reanalysis
+// Datasources (bevestig de exacte namen met POST /entity/datasources/get):
+//  - Knmi.Radar.Uncorrected                         → ruwe radar
+//  - Knmi.International.Radar.Composite              → real-time composite (live check)
+//  - Knmi.International.Radar.Composite.Final.Reanalysis → GAUGE-ADJUSTED (gouden meetlat)
 const DATASOURCE = process.argv[4] ?? 'Knmi.International.Radar.Composite';
 
 if (!CLIENT_ID || !CLIENT_SECRET) {
@@ -61,6 +64,7 @@ async function getGridAtPoint(token) {
           EndDate: stamp(now),
           VariableCodes: ['P'], // neerslag
           Interval: { Type: 'Minutes', Value: 5 },
+          DataFormatCode: 'json', // parseerbare JSON i.p.v. GeoTIFF-bestand
           Extent: {
             Xll: lon - e,
             Yll: lat - e,
