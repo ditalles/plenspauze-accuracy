@@ -2,6 +2,7 @@
  * log.mjs — neemt één momentopname per locatie:
  *   - onze nowcast (Open-Meteo / KNMI seamless), komende ~2 uur per 15 min
  *   - Buienradars officiële nowcast (gpsgadget raintext), komende 2 uur per 5 min
+ *   - de officiële KNMI-radar-nowcast op je EXACTE punt (WMS, mm/uur) — bron + meetlat
  *   - de échte meting NU bij het dichtstbijzijnde KNMI-station (grondwaarheid)
  *
  * Schrijft één NDJSON-regel per locatie naar data/JJJJ-MM-DD.ndjson.
@@ -68,6 +69,63 @@ async function fetchOpenMeteo(lat, lon, runEpoch, model) {
   });
 }
 
+// ── Officiële KNMI-radar-nowcast op punt (WMS GetFeatureInfo, mm/uur) ────────
+// Dit is zowel een VOORSPELBRON (0–2 u) als — op mAhead≈0 — de hyperlokale
+// GRONDWAARHEID: de officiële radar op je exacte punt i.p.v. een station op 15 km.
+const KNMI_WMS = 'https://api.dataplatform.knmi.nl/wms/adaguc-server';
+const KNMI_WMS_KEY =
+  process.env.KNMI_WMS_KEY ??
+  'eyJvcmciOiI1ZTU1NGUxOTI3NGE5NjAwMDEyYTNlYjEiLCJpZCI6ImYxNGU2OTY4MjM4NTQ3ZTc4MTcxZWVkZDhhZTdjODQxIiwiaCI6Im11cm11cjEyOCJ9';
+
+function flattenAdaguc(data) {
+  const out = [];
+  const walk = (o) => {
+    if (!o || typeof o !== 'object') return;
+    for (const [k, v] of Object.entries(o)) {
+      if (v && typeof v === 'object') walk(v);
+      else {
+        const t = Date.parse(k);
+        const n = v === 'nodata' || v == null ? 0 : Number(v);
+        if (Number.isFinite(t) && Number.isFinite(n)) out.push({ t, mmh: n });
+      }
+    }
+  };
+  walk(data);
+  return out.sort((a, b) => a.t - b.t);
+}
+
+async function fetchKnmiRadar(lat, lon, runEpoch) {
+  const e = 0.05;
+  const iso = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, 'Z');
+  const q = new URLSearchParams({
+    DATASET: 'radar_forecast_2.0',
+    SERVICE: 'WMS',
+    VERSION: '1.3.0',
+    REQUEST: 'GetFeatureInfo',
+    LAYERS: 'precipitation_nowcast',
+    QUERY_LAYERS: 'precipitation_nowcast',
+    CRS: 'CRS:84',
+    BBOX: `${lon - e},${lat - e},${lon + e},${lat + e}`,
+    WIDTH: '100',
+    HEIGHT: '100',
+    I: '50',
+    J: '50',
+    INFO_FORMAT: 'application/json',
+    TIME: `${iso(runEpoch)}/${iso(runEpoch + 2 * 3600 * 1000)}`,
+  });
+  const r = await fetch(`${KNMI_WMS}?${q}`, { headers: { Authorization: KNMI_WMS_KEY } });
+  if (!r.ok) throw new Error(`KNMI WMS ${r.status}`);
+  const j = await r.json();
+  const layer = Array.isArray(j) ? j[0] : null;
+  if (!layer || !/mm/i.test(layer.units ?? '')) throw new Error('geen mm-respons');
+  const pts = flattenAdaguc(layer.data);
+  // Droog (lege data) is geldig: geef een 0-reeks per 5 min terug.
+  if (!pts.length) {
+    return Array.from({ length: 25 }, (_, i) => ({ mAhead: i * 5, mmh: 0 }));
+  }
+  return pts.map((p) => ({ mAhead: Math.round((p.t - runEpoch) / 60000), mmh: p.mmh }));
+}
+
 async function fetchStations() {
   const r = await fetch('https://data.buienradar.nl/2.0/feed/json');
   const j = await r.json();
@@ -103,10 +161,14 @@ try {
 const records = [];
 for (const loc of locations) {
   try {
-    const [ours, knmi, buienradar] = await Promise.all([
+    const [ours, knmi, buienradar, knmiradar] = await Promise.all([
       fetchOpenMeteo(loc.lat, loc.lon, runEpoch, 'knmi_seamless'),
       fetchOpenMeteo(loc.lat, loc.lon, runEpoch, 'knmi_harmonie_arome_netherlands'),
       fetchBuienradar(loc.lat, loc.lon, runEpoch),
+      fetchKnmiRadar(loc.lat, loc.lon, runEpoch).catch((e) => {
+        console.error(`  KNMI-radar ${loc.naam}: ${e.message}`);
+        return null;
+      }),
     ]);
     const station = stations.length ? nearestStation(stations, loc.lat, loc.lon) : null;
     records.push({
@@ -119,12 +181,13 @@ for (const loc of locations) {
       ours,
       knmi,
       buienradar,
+      knmiradar,
     });
     const wet = (arr) => arr.some((p) => p.mAhead >= 0 && p.mAhead <= 120 && p.mmh >= WET_MMH);
     console.log(
       `${loc.naam.padEnd(11)} nu:${station?.regenNu ?? '?'}mm/u  ` +
       `Plenspauze:${wet(ours) ? 'REGEN' : 'droog'}  KNMI:${wet(knmi) ? 'REGEN' : 'droog'}  ` +
-      `Buienradar:${wet(buienradar) ? 'REGEN' : 'droog'}`,
+      `Buienradar:${wet(buienradar) ? 'REGEN' : 'droog'}  KNMIradar:${knmiradar ? (wet(knmiradar) ? 'REGEN' : 'droog') : '?'}`,
     );
   } catch (e) {
     console.error(`${loc.naam}: mislukt — ${e.message}`);

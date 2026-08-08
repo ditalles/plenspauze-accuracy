@@ -43,8 +43,7 @@ for (const f of files) {
 if (!records.length) { console.error('Nog geen records.'); process.exit(1); }
 
 // ── Radar-op-punt uit een opname: de Buienradar-nowcast-waarde op t≈0 ─────────
-function radarNowFromRecord(r) {
-  const pts = r.buienradar;
+function nowFrom(pts) {
   if (!pts || !pts.length) return null;
   let best = null, bestD = Infinity;
   for (const p of pts) {
@@ -53,6 +52,8 @@ function radarNowFromRecord(r) {
   }
   return best && bestD <= 5 ? best.mmh : null;
 }
+const radarNowFromRecord = (r) => nowFrom(r.buienradar);
+const knmiRadarNowFromRecord = (r) => nowFrom(r.knmiradar);
 
 // ── Observatie-indexen per locatie (station + radar) ─────────────────────────
 function buildIndex(valueFn) {
@@ -68,6 +69,7 @@ function buildIndex(valueFn) {
 }
 const stationIdx = buildIndex((r) => r.station?.regenNu ?? null);
 const radarIdx = buildIndex(radarNowFromRecord);
+const knmiRadarIdx = buildIndex(knmiRadarNowFromRecord);
 
 function obsAtFactory(idx) {
   return (loc, epoch) => {
@@ -95,7 +97,7 @@ function predAt(points, h) {
 
 // ── Scoren tegen een gegeven meetlat ─────────────────────────────────────────
 function blankStats() { return { n: 0, hit: 0, miss: 0, fa: 0, cn: 0, obsWet: 0 }; }
-const SOURCES = ['ours', 'knmi', 'buienradar'];
+const SOURCES = ['ours', 'knmi', 'buienradar', 'knmiradar'];
 
 function scoreAgainst(obsAt) {
   const stats = Object.fromEntries(
@@ -125,6 +127,7 @@ function scoreAgainst(obsAt) {
 
 const stationStats = scoreAgainst(obsAtFactory(stationIdx));
 const radarStats = scoreAgainst(obsAtFactory(radarIdx));
+const knmiRadarStats = scoreAgainst(obsAtFactory(knmiRadarIdx));
 
 // ── Rapport ──────────────────────────────────────────────────────────────────
 function pct(x, y) { return y ? `${Math.round((100 * x) / y)}%` : '—'; }
@@ -148,17 +151,20 @@ function block(title, stats, rows) {
   }
 }
 
-block('STATION-MEETLAT (dichtstbijzijnde station, tot ~15 km)', stationStats, [
+const ROWS = [
   ['Plenspauze', 'ours', ''],
-  ['KNMI', 'knmi', ''],
+  ['KNMI-model', 'knmi', ''],
   ['Buienradar', 'buienradar', ''],
-]);
+  ['KNMI-radar', 'knmiradar', '  ← nieuwe app-motor'],
+];
 
-block('RADAR-MEETLAT (op je exacte punt · hyperlokaal)', radarStats, [
-  ['Plenspauze', 'ours', ''],
-  ['KNMI', 'knmi', ''],
-  ['Buienradar', 'buienradar', '  ⚠ deelt bron (circulair)'],
-]);
+block('STATION-MEETLAT (dichtstbijzijnde station, tot ~15 km)', stationStats, ROWS);
+
+block('RADAR-MEETLAT · Buienradar (op je punt)', radarStats,
+  ROWS.map((r) => (r[1] === 'buienradar' ? [r[0], r[1], '  ⚠ circulair'] : r)));
+
+block('OFFICIËLE KNMI-RADAR-MEETLAT (op je exacte punt · de eerlijkste)', knmiRadarStats,
+  ROWS.map((r) => (r[1] === 'knmiradar' ? [r[0], r[1], '  ⚠ circulair'] : r)));
 
 console.log('\n  Leeswijzer: trefkans (POD) = % echte buien dat vooraf voorspeld werd,');
 console.log('  vals-alarm (FAR) = % regen-voorspellingen dat tóch droog bleef. Hoog trefkans +');
