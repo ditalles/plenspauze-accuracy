@@ -104,8 +104,8 @@ async function fetchKnmiRadar(lat, lon, runEpoch) {
     REQUEST: 'GetFeatureInfo',
     LAYERS: 'precipitation_nowcast',
     QUERY_LAYERS: 'precipitation_nowcast',
-    CRS: 'CRS:84',
-    BBOX: `${lon - e},${lat - e},${lon + e},${lat + e}`,
+    CRS: 'EPSG:4326', // WMS 1.3.0: asvolgorde lat,lon (CRS:84 draait om → lege data)
+    BBOX: `${lat - e},${lon - e},${lat + e},${lon + e}`,
     WIDTH: '100',
     HEIGHT: '100',
     I: '50',
@@ -119,10 +119,8 @@ async function fetchKnmiRadar(lat, lon, runEpoch) {
   const layer = Array.isArray(j) ? j[0] : null;
   if (!layer || !/mm/i.test(layer.units ?? '')) throw new Error('geen mm-respons');
   const pts = flattenAdaguc(layer.data);
-  // Droog (lege data) is geldig: geef een 0-reeks per 5 min terug.
-  if (!pts.length) {
-    return Array.from({ length: 25 }, (_, i) => ({ mAhead: i * 5, mmh: 0 }));
-  }
+  // Geen data = geen meting (niet "droog") → laat het record leeg.
+  if (!pts.length) throw new Error('lege radar-respons');
   return pts.map((p) => ({ mAhead: Math.round((p.t - runEpoch) / 60000), mmh: p.mmh }));
 }
 
