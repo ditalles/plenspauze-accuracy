@@ -95,33 +95,40 @@ function flattenAdaguc(data) {
 }
 
 async function fetchKnmiRadar(lat, lon, runEpoch) {
-  const e = 0.05;
   const iso = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, 'Z');
-  const q = new URLSearchParams({
-    DATASET: 'radar_forecast_2.0',
-    SERVICE: 'WMS',
-    VERSION: '1.3.0',
-    REQUEST: 'GetFeatureInfo',
-    LAYERS: 'precipitation_nowcast',
-    QUERY_LAYERS: 'precipitation_nowcast',
-    CRS: 'EPSG:4326', // WMS 1.3.0: asvolgorde lat,lon (CRS:84 draait om → lege data)
-    BBOX: `${lat - e},${lon - e},${lat + e},${lon + e}`,
-    WIDTH: '100',
-    HEIGHT: '100',
-    I: '50',
-    J: '50',
-    INFO_FORMAT: 'application/json',
-    TIME: `${iso(runEpoch)}/${iso(runEpoch + 2 * 3600 * 1000)}`,
-  });
-  const r = await fetch(`${KNMI_WMS}?${q}`, { headers: { Authorization: KNMI_WMS_KEY } });
-  if (!r.ok) throw new Error(`KNMI WMS ${r.status}`);
-  const j = await r.json();
-  const layer = Array.isArray(j) ? j[0] : null;
-  if (!layer || !/mm/i.test(layer.units ?? '')) throw new Error('geen mm-respons');
-  const pts = flattenAdaguc(layer.data);
-  // Geen data = geen meting (niet "droog") → laat het record leeg.
-  if (!pts.length) throw new Error('lege radar-respons');
-  return pts.map((p) => ({ mAhead: Math.round((p.t - runEpoch) / 60000), mmh: p.mmh }));
+  const e = 0.03;
+  const latestRun = Math.floor((runEpoch - 5 * 60000) / 300000) * 300000;
+
+  async function q(dataset, layer, from, to, ref) {
+    const p = new URLSearchParams({
+      DATASET: dataset, SERVICE: 'WMS', VERSION: '1.3.0', REQUEST: 'GetFeatureInfo',
+      LAYERS: layer, QUERY_LAYERS: layer, CRS: 'EPSG:4326',
+      BBOX: `${lat - e},${lon - e},${lat + e},${lon + e}`,
+      WIDTH: '50', HEIGHT: '50', I: '25', J: '25',
+      INFO_FORMAT: 'application/json', TIME: `${iso(from)}/${iso(to)}`,
+    });
+    if (ref) p.set('DIM_reference_time', iso(ref));
+    const r = await fetch(`${KNMI_WMS}?${p}`, { headers: { Authorization: KNMI_WMS_KEY } });
+    if (!r.ok) return null;
+    const txt = await r.text();
+    if (txt.trim().startsWith('<')) return null; // ServiceException
+    const j = JSON.parse(txt);
+    const L = Array.isArray(j) ? j[0] : null;
+    if (!L || !/mm/i.test(L.units ?? '')) return null;
+    const pts = flattenAdaguc(L.data);
+    return pts.length ? pts : null;
+  }
+
+  // Meting (nu) + voorspelling (straks, met expliciete run — zonder run serveert
+  // ADAGUC een verouderde run met bijna-nulwaarden).
+  const [obs, fc] = await Promise.all([
+    q('radar_reflectivity_composites', 'precipitation', runEpoch - 15 * 60000, runEpoch + 5 * 60000),
+    q('radar_forecast_2.0', 'precipitation_nowcast', runEpoch, runEpoch + 2 * 3600 * 1000, latestRun),
+  ]);
+  if (!obs && !fc) throw new Error('geen radar-data');
+  return [...(obs ?? []), ...(fc ?? [])]
+    .sort((a, b) => a.t - b.t)
+    .map((p) => ({ mAhead: Math.round((p.t - runEpoch) / 60000), mmh: p.mmh }));
 }
 
 async function fetchStations() {
