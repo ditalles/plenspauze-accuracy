@@ -85,8 +85,9 @@ function flattenAdaguc(data) {
       if (v && typeof v === 'object') walk(v);
       else {
         const t = Date.parse(k);
-        const n = v === 'nodata' || v == null ? 0 : Number(v);
-        if (Number.isFinite(t) && Number.isFinite(n)) out.push({ t, mmh: n });
+        const n = v === 'nodata' || v == null ? NaN : Number(v);
+        // Negatieve neerslag = vulwaarde/artefact → overslaan (niet als 0 tellen).
+        if (Number.isFinite(t) && Number.isFinite(n) && n >= 0) out.push({ t, mmh: n });
       }
     }
   };
