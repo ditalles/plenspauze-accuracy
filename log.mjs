@@ -86,8 +86,9 @@ function flattenAdaguc(data) {
       else {
         const t = Date.parse(k);
         const n = v === 'nodata' || v == null ? NaN : Number(v);
-        // Negatieve neerslag = vulwaarde/artefact → overslaan (niet als 0 tellen).
-        if (Number.isFinite(t) && Number.isFinite(n) && n >= 0) out.push({ t, mmh: n });
+        // Alleen fysisch mogelijke waarden (de forecast-laag geeft soms onzin:
+        // negatief, of uitschieters van miljarden mm/u).
+        if (Number.isFinite(t) && Number.isFinite(n) && n >= 0 && n <= 200) out.push({ t, mmh: n });
       }
     }
   };
