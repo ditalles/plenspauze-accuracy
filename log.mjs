@@ -107,7 +107,9 @@ async function fetchKnmiRadar(lat, lon, runEpoch) {
       LAYERS: layer, QUERY_LAYERS: layer, CRS: 'EPSG:4326',
       BBOX: `${lat - e},${lon - e},${lat + e},${lon + e}`,
       WIDTH: '50', HEIGHT: '50', I: '25', J: '25',
-      INFO_FORMAT: 'application/json', TIME: `${iso(from)}/${iso(to)}`,
+      INFO_FORMAT: 'application/json',
+      // Eén tijdstip → exacte TIME; anders een bereik (zie fetchKnmiRadar).
+      TIME: from === to ? iso(from) : `${iso(from)}/${iso(to)}`,
     });
     if (ref) p.set('DIM_reference_time', iso(ref));
     const r = await fetch(`${KNMI_WMS}?${p}`, { headers: { Authorization: KNMI_WMS_KEY } });
@@ -121,14 +123,31 @@ async function fetchKnmiRadar(lat, lon, runEpoch) {
     return pts.length ? pts : null;
   }
 
-  // Meting (nu) + voorspelling (straks, met expliciete run — zonder run serveert
-  // ADAGUC een verouderde run met bijna-nulwaarden).
-  const [obs, fc] = await Promise.all([
-    q('radar_reflectivity_composites', 'precipitation', runEpoch - 15 * 60000, runEpoch + 5 * 60000),
-    q('radar_forecast_2.0', 'precipitation_nowcast', runEpoch, runEpoch + 2 * 3600 * 1000, latestRun),
-  ]);
-  if (!obs && !fc) throw new Error('geen radar-data');
-  return [...(obs ?? []), ...(fc ?? [])]
+  // Meting: één bevraging over een tijdsbereik werkt hier prima.
+  const obs = await q(
+    'radar_reflectivity_composites', 'precipitation',
+    runEpoch - 15 * 60000, runEpoch + 5 * 60000,
+  );
+
+  // Voorspelling: ELK TIJDSTIP APART opvragen.
+  //
+  // Gemeten 28 aug 2026 (Utrecht, run 13:05, bui van 27 mm/u in aantocht):
+  //   met een tijdsbereik  → 48,7 daarna 0,00  0,00  0,00  0,00 …
+  //   per tijdstip apart   → 48,7  12,8  8,2  4,6  1,7  0,36  0,12
+  // ADAGUC geeft bij een bereik alleen de eerste stap terug en vult de rest met
+  // nullen. Daardoor leek de KNMI-nowcast maandenlang onbruikbaar (0% trefkans
+  // vanaf +30 min) terwijl het product gewoon werkt. Exacte tijdstippen MOETEN
+  // op 5 minuten uitgelijnd zijn, anders volgt InvalidDimensionValue.
+  const stappen = [15, 30, 45, 60, 75, 90, 105, 120];
+  const fc = [];
+  for (const min of stappen) {
+    const t = Math.round((runEpoch + min * 60000) / 300000) * 300000;
+    const pts = await q('radar_forecast_2.0', 'precipitation_nowcast', t, t, latestRun);
+    if (pts?.length) fc.push(pts[0]);
+  }
+
+  if (!obs && !fc.length) throw new Error('geen radar-data');
+  return [...(obs ?? []), ...fc]
     .sort((a, b) => a.t - b.t)
     .map((p) => ({ mAhead: Math.round((p.t - runEpoch) / 60000), mmh: p.mmh }));
 }
