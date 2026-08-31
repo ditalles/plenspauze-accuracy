@@ -2,12 +2,25 @@ name: nowcast-logger
 
 # Zelf-pacende logger: één run draait ~5 uur en maakt INTERN elke 10 min een
 # opname (sleep-loop), i.p.v. te vertrouwen op GitHubs geplande cron — die wordt
-# voor sub-uurlijkse schema's zwaar uitgesteld. Een nieuwe run wordt elke 5 uur
-# gestart als opvolger; `concurrency` voorkomt overlap. Voor PUBLIEKE repo's zijn
-# de Action-minuten gratis/onbeperkt, dus dit mag continu draaien.
+# voor sub-uurlijkse schema's zwaar uitgesteld.
+#
+# UURLIJKSE cron, niet elke 5 uur. Dat lijkt overdreven voor een run van 5 uur,
+# maar het is juist de vangnet-constructie: `concurrency` met
+# cancel-in-progress:false laat een tweede run WACHTEN in plaats van starten, en
+# GitHub houdt er precies één in de wachtrij. Er staat dus vrijwel altijd een
+# opvolger klaar die begint zodra de lopende run eindigt.
+#
+# Waarom dit nodig was: op 31 aug viel de cron van 10:00 stil en lag de logger
+# ruim twee uur plat — met 'elke 5 uur' kost één gemiste trigger je vijf uur
+# data. Nu kost een gemiste trigger hooguit een uur, en meestal niets omdat de
+# wachtrij al gevuld is.
+#
+# Zelf-dispatchen aan het eind van een run zou eleganter zijn, maar kan niet:
+# GitHub weigert dat de standaard GITHUB_TOKEN een workflow start (bescherming
+# tegen oneindige lussen). Dat zou een persoonlijke token vereisen.
 on:
   schedule:
-    - cron: '0 */5 * * *' # elke 5 uur een verse run starten
+    - cron: '17 * * * *' # elk uur; niet op het hele uur, dan is de wachtrij korter
   workflow_dispatch: {}
 
 permissions:
