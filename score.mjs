@@ -3,7 +3,9 @@
  * DRIE meetlatten:
  *   1. STATION-meetlat     — het dichtstbijzijnde KNMI/RWS-station (tot ~15 km weg).
  *   2. RADAR-meetlat        — de neerslagradar op je EXACTE punt (hyperlokaal).
- *   3. REGENMETER-meetlat   — het meetnet van de waterschappen. Gemiddeld 4,4 km
+ *   3. EDR-STATION-meetlat  — KNMI's officiële 10-minuten stationsnet (77 stations,
+ *      CC BY 4.0). Vervangt de Buienradar-stationfeed (40 stations, niet-commercieel).
+ *   4. REGENMETER-meetlat   — het meetnet van de waterschappen. Gemiddeld 4,4 km
  *      i.p.v. 8,5 km bij het KNMI-net, en bij Westzaan 2,8 km i.p.v. 14,2 km.
  *      Een échte regenmeter (geen radar), dus onafhankelijk van elke voorspelbron.
  *
@@ -74,6 +76,29 @@ const stationIdx = buildIndex((r) => r.station?.regenNu ?? null);
 
 // De regenmeters hebben hun EIGEN meettijd (het bestand loopt ~31 min achter),
 // dus indexeren op r.epoch zou de meting op het verkeerde moment plakken.
+// Beide bronnen dragen hun eigen meettijd; indexeren op r.epoch zou de meting
+// op het verkeerde moment plakken.
+function idxOpEigenTijd(veld, waardeFn) {
+  const map = new Map();
+  const gezien = new Set();
+  for (const r of records) {
+    const w = r[veld];
+    if (!w || !w.tijd) continue;
+    const v = waardeFn(w);
+    if (v == null) continue;
+    const epoch = Date.parse(w.tijd);
+    if (!Number.isFinite(epoch)) continue;
+    const sleutel = `${r.loc}|${epoch}`;
+    if (gezien.has(sleutel)) continue;
+    gezien.add(sleutel);
+    if (!map.has(r.loc)) map.set(r.loc, []);
+    map.get(r.loc).push({ epoch, mmh: v });
+  }
+  for (const arr of map.values()) arr.sort((a, b) => a.epoch - b.epoch);
+  return map;
+}
+const edrIdx = idxOpEigenTijd('edrstation', (w) => w.regenNu);
+
 const waterschapIdx = (() => {
   const map = new Map();
   const gezien = new Set();
@@ -151,6 +176,7 @@ function scoreAgainst(obsAt) {
 
 const stationStats = scoreAgainst(obsAtFactory(stationIdx));
 const waterschapStats = scoreAgainst(obsAtFactory(waterschapIdx));
+const edrStats = scoreAgainst(obsAtFactory(edrIdx));
 const radarStats = scoreAgainst(obsAtFactory(radarIdx));
 const knmiRadarStats = scoreAgainst(obsAtFactory(knmiRadarIdx));
 
@@ -185,6 +211,15 @@ const ROWS = [
 
 block('STATION-MEETLAT (dichtstbijzijnde station, tot ~15 km)', stationStats,
   ROWS.map((r) => (r[1] === 'buienradar' ? [r[0], r[1], '  ← app: vooruitblik'] : r)));
+
+const edrN = [...edrIdx.values()].reduce((a, b) => a + b.length, 0);
+if (edrN) {
+  block(`EDR-STATION-MEETLAT · KNMI 10-min (${edrN} metingen · 77 stations, CC BY 4.0)`,
+    edrStats, ROWS);
+} else {
+  console.log('\n══ EDR-STATION-MEETLAT · KNMI 10-min ══');
+  console.log('    Nog geen metingen verzameld — deze bron is net toegevoegd.');
+}
 
 const meters = [...waterschapIdx.values()].reduce((a, b) => a + b.length, 0);
 if (meters) {

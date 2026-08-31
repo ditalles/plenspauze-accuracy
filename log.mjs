@@ -257,6 +257,101 @@ function nearestMeter(meters, lat, lon) {
   };
 }
 
+// ── KNMI EDR: officiële 10-minuten stationswaarnemingen ─────────────────────
+// 77 stations, CC BY 4.0, dezelfde bron als de rest. Vervangt op termijn de
+// Buienradar-stationfeed (40 stations, niet-commercieel) als grondwaarheid.
+// Levert behalve neerslag ook GEMETEN wind — richting en snelheid, 10-minuten.
+//
+// LET OP: `datetime` moet absolute ISO-tijden zijn; `PT60M/now` wordt geweigerd.
+// De oude open-data set `Actuele10mindataKNMIstations` is bevroren sinds okt
+// 2025 — die geeft stilletjes stokoude data. Dit is de opvolger.
+const EDR = 'https://api.dataplatform.knmi.nl/edr/v1/collections/10-minute-in-situ-meteorological-observations';
+const EDR_KEY =
+  process.env.KNMI_EDR_KEY ??
+  'eyJvcmciOiI1ZTU1NGUxOTI3NGE5NjAwMDEyYTNlYjEiLCJpZCI6ImM1MWUzZTFhMmMyZjRiOTJhZTJlZGViOWFmY2RiNzI0IiwiaCI6Im11cm11cjEyOCJ9';
+
+async function edr(pad, params) {
+  const q = params ? `?${new URLSearchParams(params)}` : '';
+  for (let poging = 0; poging < 4; poging++) {
+    const r = await fetch(`${EDR}${pad}${q}`, { headers: { Authorization: EDR_KEY } });
+    if (r.status === 429) {
+      await new Promise((res) => setTimeout(res, 1200 * (poging + 1)));
+      continue;
+    }
+    if (!r.ok) return null;
+    return r.json();
+  }
+  return null;
+}
+
+let _edrLocaties = null;
+async function edrStations() {
+  if (_edrLocaties) return _edrLocaties;
+  const j = await edr('/locations');
+  _edrLocaties = (j?.features ?? [])
+    .map((f) => ({
+      id: f.id,
+      naam: f.properties?.name ?? f.id,
+      lat: f.geometry?.coordinates?.[1],
+      lon: f.geometry?.coordinates?.[0],
+    }))
+    .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lon));
+  return _edrLocaties;
+}
+
+/** Laatste niet-lege waarde uit een CoverageJSON-reeks, met bijbehorende tijd. */
+function laatste(cov, param) {
+  const vals = cov?.ranges?.[param]?.values;
+  const tijden = cov?.domain?.axes?.t?.values;
+  if (!vals || !tijden) return null;
+  for (let i = vals.length - 1; i >= 0; i--) {
+    if (vals[i] != null) return { waarde: vals[i], tijd: tijden[i] };
+  }
+  return null;
+}
+
+/**
+ * Waarneming bij het dichtstbijzijnde EDR-station. Niet elk station meet alles:
+ * wind heeft 16/16 in de steekproef, neerslagintensiteit 9/16. Ontbrekende
+ * waarden blijven null — nooit invullen als 0.
+ */
+async function fetchEdrNabij(lat, lon, runEpoch) {
+  const stations = await edrStations();
+  if (!stations.length) return null;
+  const met = stations
+    .map((s) => ({ ...s, km: Math.hypot((s.lat - lat) * 111, (s.lon - lon) * 68) }))
+    .sort((a, b) => a.km - b.km);
+
+  const van = new Date(runEpoch - 40 * 60000).toISOString().replace(/\.\d+Z$/, 'Z');
+  const tot = new Date(runEpoch).toISOString().replace(/\.\d+Z$/, 'Z');
+
+  // Hooguit drie stations proberen: het dichtstbijzijnde meet niet altijd regen.
+  for (const s of met.slice(0, 3)) {
+    const j = await edr(`/locations/${s.id}`, {
+      'parameter-name': 'dd,ff,fx,ta,rg',
+      datetime: `${van}/${tot}`,
+    });
+    const cov = j?.coverages?.[0];
+    if (!cov) continue;
+    const regen = laatste(cov, 'rg');
+    const wind = laatste(cov, 'ff');
+    const richting = laatste(cov, 'dd');
+    if (!regen && !wind) continue;
+    return {
+      naam: s.naam,
+      id: s.id,
+      afstandKm: Math.round(s.km * 10) / 10,
+      regenNu: regen ? regen.waarde : null, // mm/uur, gemeten
+      windMs: wind ? wind.waarde : null,
+      windRichting: richting ? richting.waarde : null,
+      stootMs: laatste(cov, 'fx')?.waarde ?? null,
+      tempC: laatste(cov, 'ta')?.waarde ?? null,
+      tijd: (regen ?? wind).tijd,
+    };
+  }
+  return null;
+}
+
 async function fetchStations() {
   const r = await fetch('https://data.buienradar.nl/2.0/feed/json');
   const j = await r.json();
@@ -311,6 +406,10 @@ for (const loc of locations) {
     ]);
     const station = stations.length ? nearestStation(stations, loc.lat, loc.lon) : null;
     const waterschap = meters.length ? nearestMeter(meters, loc.lat, loc.lon) : null;
+    const edrstation = await fetchEdrNabij(loc.lat, loc.lon, runEpoch).catch((e) => {
+      console.error(`  EDR ${loc.naam}: ${e.message}`);
+      return null;
+    });
     records.push({
       ts: runIso,
       epoch: runEpoch,
@@ -319,6 +418,7 @@ for (const loc of locations) {
       lon: loc.lon,
       station,
       waterschap,
+      edrstation,
       ours,
       knmi,
       buienradar,
@@ -327,7 +427,8 @@ for (const loc of locations) {
     const wet = (arr) => arr.some((p) => p.mAhead >= 0 && p.mAhead <= 120 && p.mmh >= WET_MMH);
     console.log(
       `${loc.naam.padEnd(11)} nu:${station?.regenNu ?? '?'}mm/u ` +
-      `(meter ${waterschap ? `${waterschap.mmh}mm/u @${waterschap.afstandKm}km` : '—'})  ` +
+      `(meter ${waterschap ? `${waterschap.mmh}mm/u @${waterschap.afstandKm}km` : '—'}` +
+      `${edrstation ? `, EDR ${edrstation.regenNu ?? '?'}mm/u wind ${edrstation.windMs ?? '?'}m/s @${edrstation.afstandKm}km` : ''})  ` +
       `Plenspauze:${wet(ours) ? 'REGEN' : 'droog'}  KNMI:${wet(knmi) ? 'REGEN' : 'droog'}  ` +
       `Buienradar:${wet(buienradar) ? 'REGEN' : 'droog'}  KNMIradar:${knmiradar ? (wet(knmiradar) ? 'REGEN' : 'droog') : '?'}`,
     );
