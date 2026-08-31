@@ -152,6 +152,111 @@ async function fetchKnmiRadar(lat, lon, runEpoch) {
     .map((p) => ({ mAhead: Math.round((p.t - runEpoch) / 60000), mmh: p.mmh }));
 }
 
+// ── Regenmeters van de waterschappen (KNMI Data Platform, CC BY 4.0) ─────────
+// 16 waterschappen leveren hun eigen meetnet aan; het gecombineerde bestand
+// wordt elke 5 minuten ververst en bevat ~147 meters met coördinaten.
+//
+// Waarom dit ertoe doet: het dichtstbijzijnde KNMI-station staat gemiddeld
+// 8,5 km weg (Westzaan zelfs 14,2 km) en dat gat maakte onze meetlat onbruikbaar
+// bij verspreide buien. Met deze meters erbij is dat gemiddeld 4,4 km, en bij
+// Westzaan 2,8 km.
+//
+// LET OP: dit bestand loopt ~31 minuten achter. Daarom slaan we de MEETTIJD op
+// en niet alleen de waarde — score.mjs matcht een voorspelling-voor-T met de
+// metermeting óp T, ongeacht wanneer wij hem ophaalden.
+const KNMI_OPENDATA = 'https://api.dataplatform.knmi.nl/open-data/v1';
+const KNMI_OPENDATA_KEY =
+  process.env.KNMI_OPENDATA_KEY ??
+  'eyJvcmciOiI1ZTU1NGUxOTI3NGE5NjAwMDEyYTNlYjEiLCJpZCI6IjUzYTg1ZDBhMmQ5YzRkYzJiYWNlNzQ4NTQ2Zjk4ODExIiwiaCI6Im11cm11cjEyOCJ9';
+const WATERSCHAP_DS = 'waterboard_raingauge_quality_controlled_all_combined';
+
+async function knmiOpenData(pad, params) {
+  const q = params ? `?${new URLSearchParams(params)}` : '';
+  for (let poging = 0; poging < 5; poging++) {
+    const r = await fetch(`${KNMI_OPENDATA}${pad}${q}`, {
+      headers: { Authorization: KNMI_OPENDATA_KEY },
+    });
+    if (r.status === 429) {
+      await new Promise((res) => setTimeout(res, 1500 * (poging + 1)));
+      continue;
+    }
+    if (!r.ok) return null;
+    return r.json();
+  }
+  return null;
+}
+
+/**
+ * FEWS-PI XML uitlezen. Geen XML-parser in Node, maar het bestand is
+ * machinaal gegenereerd en volstrekt regelmatig, dus regexen volstaan.
+ * De bron bevat een encodingfout (accenten komen kapot binnen); daarom lezen we
+ * tolerant in en negeren we onleesbare tekens in de stationsnaam.
+ */
+function parseRegenmeters(xml) {
+  const uit = [];
+  for (const blok of xml.split('<series>').slice(1)) {
+    const pak = (tag) => blok.match(new RegExp(`<${tag}>([^<]*)</${tag}>`))?.[1];
+    const lat = Number(pak('lat'));
+    const lon = Number(pak('lon'));
+    const stap = Number(blok.match(/<timeStep[^>]*multiplier="(\d+)"/)?.[1]);
+    const ev = blok.match(/<event date="([^"]+)" time="([^"]+)" value="([^"]+)"(?: flag="([^"]+)")?/);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !ev) continue;
+    const mm = Number(ev[3]);
+    const vlag = ev[4] ?? '000000';
+    // Vlag 50 = meter of radar leverde niets. Zulke punten weglaten: een
+    // ontbrekende meting mag nooit als "droog" meetellen.
+    if (!Number.isFinite(mm) || vlag.includes('50')) continue;
+    uit.push({
+      naam: (pak('stationName') ?? '').replace(/[^\x20-\x7e\u00c0-\u017f]/g, '').trim(),
+      lat,
+      lon,
+      mm,
+      // timeZone in het bestand is 0.0 → UTC.
+      tijd: `${ev[1]}T${ev[2]}Z`,
+      // 5-minuutssom → mm/uur, zodat het vergelijkbaar is met alle andere bronnen.
+      mmh: Math.round((mm * (3600 / (stap || 300))) * 100) / 100,
+    });
+  }
+  return uit;
+}
+
+async function fetchRegenmeters() {
+  const lijst = await knmiOpenData(`/datasets/${WATERSCHAP_DS}/versions/1.0/files`, {
+    maxKeys: '1',
+    orderBy: 'created',
+    sorting: 'desc',
+  });
+  const naam = lijst?.files?.[0]?.filename;
+  if (!naam) return [];
+  const link = await knmiOpenData(
+    `/datasets/${WATERSCHAP_DS}/versions/1.0/files/${naam}/url`,
+  );
+  if (!link?.temporaryDownloadUrl) return [];
+  const r = await fetch(link.temporaryDownloadUrl);
+  if (!r.ok) return [];
+  return parseRegenmeters(await r.text());
+}
+
+function nearestMeter(meters, lat, lon) {
+  let best = null;
+  let bestD = Infinity;
+  for (const m of meters) {
+    const d = Math.hypot((m.lat - lat) * 111, (m.lon - lon) * 68);
+    if (d < bestD) {
+      bestD = d;
+      best = m;
+    }
+  }
+  if (!best) return null;
+  return {
+    naam: best.naam,
+    afstandKm: Math.round(bestD * 10) / 10,
+    mm: best.mm,
+    mmh: best.mmh,
+    tijd: best.tijd,
+  };
+}
+
 async function fetchStations() {
   const r = await fetch('https://data.buienradar.nl/2.0/feed/json');
   const j = await r.json();
@@ -184,6 +289,14 @@ try {
   console.error('Stationfeed mislukt:', e.message);
 }
 
+let meters = [];
+try {
+  meters = await fetchRegenmeters();
+  console.log(`${meters.length} waterschaps-regenmeters opgehaald`);
+} catch (e) {
+  console.error('Regenmeters mislukt:', e.message);
+}
+
 const records = [];
 for (const loc of locations) {
   try {
@@ -197,6 +310,7 @@ for (const loc of locations) {
       }),
     ]);
     const station = stations.length ? nearestStation(stations, loc.lat, loc.lon) : null;
+    const waterschap = meters.length ? nearestMeter(meters, loc.lat, loc.lon) : null;
     records.push({
       ts: runIso,
       epoch: runEpoch,
@@ -204,6 +318,7 @@ for (const loc of locations) {
       lat: loc.lat,
       lon: loc.lon,
       station,
+      waterschap,
       ours,
       knmi,
       buienradar,
@@ -211,7 +326,8 @@ for (const loc of locations) {
     });
     const wet = (arr) => arr.some((p) => p.mAhead >= 0 && p.mAhead <= 120 && p.mmh >= WET_MMH);
     console.log(
-      `${loc.naam.padEnd(11)} nu:${station?.regenNu ?? '?'}mm/u  ` +
+      `${loc.naam.padEnd(11)} nu:${station?.regenNu ?? '?'}mm/u ` +
+      `(meter ${waterschap ? `${waterschap.mmh}mm/u @${waterschap.afstandKm}km` : '—'})  ` +
       `Plenspauze:${wet(ours) ? 'REGEN' : 'droog'}  KNMI:${wet(knmi) ? 'REGEN' : 'droog'}  ` +
       `Buienradar:${wet(buienradar) ? 'REGEN' : 'droog'}  KNMIradar:${knmiradar ? (wet(knmiradar) ? 'REGEN' : 'droog') : '?'}`,
     );

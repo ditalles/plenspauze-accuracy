@@ -1,8 +1,11 @@
 /**
  * score.mjs — leest alle data/*.ndjson en scoort de nowcasts achteraf tegen
- * TWEE meetlatten:
- *   1. STATION-meetlat  — het dichtstbijzijnde KNMI/RWS-station (tot ~15 km weg).
- *   2. RADAR-meetlat     — de neerslagradar op je EXACTE punt (hyperlokaal).
+ * DRIE meetlatten:
+ *   1. STATION-meetlat     — het dichtstbijzijnde KNMI/RWS-station (tot ~15 km weg).
+ *   2. RADAR-meetlat        — de neerslagradar op je EXACTE punt (hyperlokaal).
+ *   3. REGENMETER-meetlat   — het meetnet van de waterschappen. Gemiddeld 4,4 km
+ *      i.p.v. 8,5 km bij het KNMI-net, en bij Westzaan 2,8 km i.p.v. 14,2 km.
+ *      Een échte regenmeter (geen radar), dus onafhankelijk van elke voorspelbron.
  *
  * De radar-op-punt leiden we af uit de Buienradar-nowcast die per opname is
  * gelogd: de waarde op t≈0 (mAhead ~ 0) is het radarbeeld op dat punt op dat
@@ -68,6 +71,27 @@ function buildIndex(valueFn) {
   return map;
 }
 const stationIdx = buildIndex((r) => r.station?.regenNu ?? null);
+
+// De regenmeters hebben hun EIGEN meettijd (het bestand loopt ~31 min achter),
+// dus indexeren op r.epoch zou de meting op het verkeerde moment plakken.
+const waterschapIdx = (() => {
+  const map = new Map();
+  const gezien = new Set();
+  for (const r of records) {
+    const w = r.waterschap;
+    if (!w || w.mmh == null || !w.tijd) continue;
+    const epoch = Date.parse(w.tijd);
+    if (!Number.isFinite(epoch)) continue;
+    // Elke meting komt in meerdere opnames terug; één keer tellen.
+    const sleutel = `${r.loc}|${epoch}`;
+    if (gezien.has(sleutel)) continue;
+    gezien.add(sleutel);
+    if (!map.has(r.loc)) map.set(r.loc, []);
+    map.get(r.loc).push({ epoch, mmh: w.mmh });
+  }
+  for (const arr of map.values()) arr.sort((a, b) => a.epoch - b.epoch);
+  return map;
+})();
 const radarIdx = buildIndex(radarNowFromRecord);
 const knmiRadarIdx = buildIndex(knmiRadarNowFromRecord);
 
@@ -126,6 +150,7 @@ function scoreAgainst(obsAt) {
 }
 
 const stationStats = scoreAgainst(obsAtFactory(stationIdx));
+const waterschapStats = scoreAgainst(obsAtFactory(waterschapIdx));
 const radarStats = scoreAgainst(obsAtFactory(radarIdx));
 const knmiRadarStats = scoreAgainst(obsAtFactory(knmiRadarIdx));
 
@@ -155,10 +180,20 @@ const ROWS = [
   ['Plenspauze', 'ours', ''],
   ['KNMI-model', 'knmi', ''],
   ['Buienradar', 'buienradar', ''],
-  ['KNMI-radar', 'knmiradar', '  ← nieuwe app-motor'],
+  ['KNMI-radar', 'knmiradar', ''],
 ];
 
-block('STATION-MEETLAT (dichtstbijzijnde station, tot ~15 km)', stationStats, ROWS);
+block('STATION-MEETLAT (dichtstbijzijnde station, tot ~15 km)', stationStats,
+  ROWS.map((r) => (r[1] === 'buienradar' ? [r[0], r[1], '  ← app: vooruitblik'] : r)));
+
+const meters = [...waterschapIdx.values()].reduce((a, b) => a + b.length, 0);
+if (meters) {
+  block(`REGENMETER-MEETLAT · waterschappen (${meters} metingen · echte regenmeter)`,
+    waterschapStats, ROWS);
+} else {
+  console.log('\n══ REGENMETER-MEETLAT · waterschappen ══');
+  console.log('    Nog geen metingen verzameld — deze bron is net toegevoegd.');
+}
 
 block('RADAR-MEETLAT · Buienradar (op je punt)', radarStats,
   ROWS.map((r) => (r[1] === 'buienradar' ? [r[0], r[1], '  ⚠ circulair'] : r)));
@@ -170,4 +205,7 @@ console.log('\n  Leeswijzer: trefkans (POD) = % echte buien dat vooraf voorspeld
 console.log('  vals-alarm (FAR) = % regen-voorspellingen dat tóch droog bleef. Hoog trefkans +');
 console.log('  laag vals-alarm = goed. Vergelijk de twee meetlatten: hoeveel van het "vals');
 console.log('  alarm" onder het station was gewoon het 15 km-gat? Onder de radar-meetlat');
-console.log('  meet je hyperlokaal — dát is de eerlijke toets voor Plenspauze/KNMI.\n');
+console.log('  meet je hyperlokaal — dát is de eerlijke toets voor Plenspauze/KNMI.');
+console.log('  De REGENMETER-meetlat is de enige die niet van radar afhangt: een echte');
+console.log('  emmer die leegloopt, gemiddeld 4,4 km bij je vandaan. Wijkt die sterk af');
+console.log('  van de radar-meetlatten, dan zit het verschil in de radar, niet in de app.\n');
