@@ -42,6 +42,14 @@ jobs:
           node-version: 20
 
       - name: Zelf-pacende logger (opname elke 10 min, ~5 uur lang)
+        # Eigen KNMI-sleutels via secrets, nooit in de broncode: deze repo is
+        # publiek. Zonder KNMI_OPENDATA_KEY valt log.mjs terug op de gedeelde
+        # anonieme sleutel, en die geeft structureel 429 — dan komen de
+        # waterschapsmeters niet binnen en staat de kalibratiemeting stil.
+        env:
+          KNMI_OPENDATA_KEY: ${{ secrets.KNMI_OPENDATA_KEY }}
+          KNMI_WMS_KEY: ${{ secrets.KNMI_WMS_KEY }}
+          KNMI_EDR_KEY: ${{ secrets.KNMI_EDR_KEY }}
         run: |
           git config user.name  "nowcast-logger"
           git config user.email "actions@users.noreply.github.com"
