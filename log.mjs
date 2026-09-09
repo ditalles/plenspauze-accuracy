@@ -172,12 +172,21 @@ const WATERSCHAP_DS = 'waterboard_raingauge_quality_controlled_all_combined';
 
 async function knmiOpenData(pad, params) {
   const q = params ? `?${new URLSearchParams(params)}` : '';
-  for (let poging = 0; poging < 5; poging++) {
+  // Ruim wachten bij 429. De sleutel hieronder is de GEDEELDE anonieme
+  // open-data-sleutel; die wordt door iedereen gebruikt en knijpt regelmatig af.
+  // Gemeten 9 sep 2026: een run haalde 0 regenmeters op omdat alle vijf pogingen
+  // binnen 22 seconden vielen. Nu tot ruim twee minuten, oplopend.
+  //
+  // De echte oplossing is een eigen sleutel (gratis, developer.dataplatform.knmi.nl).
+  // Tot die er is, is dit een pleister — en een run zonder meters is niet erg,
+  // zolang hij maar geen verzonnen data wegschrijft.
+  const wacht = [2000, 5000, 10000, 20000, 35000, 55000];
+  for (let poging = 0; poging <= wacht.length; poging++) {
     const r = await fetch(`${KNMI_OPENDATA}${pad}${q}`, {
       headers: { Authorization: KNMI_OPENDATA_KEY },
     });
-    if (r.status === 429) {
-      await new Promise((res) => setTimeout(res, 1500 * (poging + 1)));
+    if (r.status === 429 && poging < wacht.length) {
+      await new Promise((res) => setTimeout(res, wacht[poging]));
       continue;
     }
     if (!r.ok) return null;
@@ -254,7 +263,59 @@ function nearestMeter(meters, lat, lon) {
     mm: best.mm,
     mmh: best.mmh,
     tijd: best.tijd,
+    // De coördinaten van de meter zelf, om de radar dáár uit te lezen.
+    lat: best.lat,
+    lon: best.lon,
   };
+}
+
+/**
+ * Wat de radar zag OP DE COÖRDINATEN VAN DE REGENMETER, op het moment dat de
+ * meter mat.
+ *
+ * Waarom dit apart wordt gelogd: de radar afrekenen op onze stadspunten meet
+ * twee dingen tegelijk — de kalibratiefout van de radar én de afstand tot de
+ * meter. Op de meter zelf valt die afstand weg en houd je de zuivere
+ * kalibratiefout over.
+ *
+ * Aanleiding (gemeten 9 sep 2026, 103 regen-momenten): waar een meter binnen
+ * 4 km regen mat, las de radar er mediaan 31% van, en zag hij 23% van de keren
+ * helemaal niets. Bij 8-20 km was dat 0% en 69% — dat is de afstand, niet de
+ * radar. Om die twee uit elkaar te trekken is deze meting nodig.
+ */
+async function radarOpMeter(meter, runEpoch) {
+  if (!meter || meter.lat == null || !meter.tijd) return null;
+  const meetTijd = Date.parse(meter.tijd);
+  if (!Number.isFinite(meetTijd)) return null;
+  const iso = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, 'Z');
+  const e = 0.02;
+  const p = new URLSearchParams({
+    DATASET: 'radar_reflectivity_composites', SERVICE: 'WMS', VERSION: '1.3.0',
+    REQUEST: 'GetFeatureInfo', LAYERS: 'precipitation', QUERY_LAYERS: 'precipitation',
+    CRS: 'EPSG:4326',
+    BBOX: `${meter.lat - e},${meter.lon - e},${meter.lat + e},${meter.lon + e}`,
+    WIDTH: '20', HEIGHT: '20', I: '10', J: '10', INFO_FORMAT: 'application/json',
+    // Rond de MEETTIJD van de meter, niet rond nu: het bestand loopt ~31 min
+    // achter en anders vergelijk je twee verschillende momenten.
+    TIME: `${iso(meetTijd - 6 * 60000)}/${iso(meetTijd + 6 * 60000)}`,
+  });
+  try {
+    const r = await fetch(`${KNMI_WMS}?${p}`, { headers: { Authorization: KNMI_WMS_KEY } });
+    if (!r.ok) return null;
+    const txt = await r.text();
+    if (txt.trim().startsWith('<')) return null;
+    const j = JSON.parse(txt);
+    const L = Array.isArray(j) ? j[0] : null;
+    if (!L || !/mm/i.test(L.units ?? '')) return null;
+    const pts = flattenAdaguc(L.data);
+    if (!pts.length) return null;
+    // De waarde het dichtst bij de meettijd.
+    const best = pts.reduce((b, x) =>
+      Math.abs(x.t - meetTijd) < Math.abs(b.t - meetTijd) ? x : b);
+    return { mmh: best.mmh, tijd: new Date(best.t).toISOString(), afwijkingMin: Math.round((best.t - meetTijd) / 60000) };
+  } catch {
+    return null;
+  }
 }
 
 // ── KNMI EDR: officiële 10-minuten stationswaarnemingen ─────────────────────
@@ -406,6 +467,9 @@ for (const loc of locations) {
     ]);
     const station = stations.length ? nearestStation(stations, loc.lat, loc.lon) : null;
     const waterschap = meters.length ? nearestMeter(meters, loc.lat, loc.lon) : null;
+    // Radar op de meter zelf: zonder afstand ertussen is dit de zuivere
+    // kalibratiefout van de radar.
+    const meterRadar = await radarOpMeter(waterschap, runEpoch).catch(() => null);
     const edrstation = await fetchEdrNabij(loc.lat, loc.lon, runEpoch).catch((e) => {
       console.error(`  EDR ${loc.naam}: ${e.message}`);
       return null;
@@ -418,6 +482,7 @@ for (const loc of locations) {
       lon: loc.lon,
       station,
       waterschap,
+      meterRadar,
       edrstation,
       ours,
       knmi,
