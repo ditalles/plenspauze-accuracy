@@ -69,3 +69,10 @@ jobs:
             [ "$(date +%s)" -lt "$END" ] && sleep 600
           done
           echo "Run klaar: $N opnames."
+
+      # Klaagt als een bron een etmaal lang niets oplevert. Faalt met opzet:
+      # een gefaalde taak levert een mail op, een regel in een log niet. Op
+      # 6 okt 2026 logden de KNMI-radar en EDR 26 dagen niets zonder dat iemand
+      # het merkte — de logger draaide door en bleef nette bestanden maken.
+      - name: Controleer of alle bronnen nog leveren
+        run: node bronnen.mjs

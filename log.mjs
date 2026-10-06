@@ -72,10 +72,42 @@ async function fetchOpenMeteo(lat, lon, runEpoch, model) {
 // ── Officiële KNMI-radar-nowcast op punt (WMS GetFeatureInfo, mm/uur) ────────
 // Dit is zowel een VOORSPELBRON (0–2 u) als — op mAhead≈0 — de hyperlokale
 // GRONDWAARHEID: de officiële radar op je exacte punt i.p.v. een station op 15 km.
+/**
+ * Een sleutel uit de omgeving halen, en hard stoppen als hij er niet is.
+ *
+ * Hier stond vroeger `process.env.X ?? '<sleutel>'`. Dat leek handig, maar het
+ * was de reden dat een storing 26 dagen onzichtbaar bleef: toen de secret niet
+ * was gezet, viel de logger terug op een verlopen sleutel, kreeg netjes 403,
+ * sloeg niets op en ging vrolijk door. De bestanden zagen er prima uit — er
+ * stonden alleen twee velden minder in.
+ *
+ * Een ontbrekende sleutel hoort te knallen, niet te fluisteren. En een openbare
+ * repo is sowieso geen plek voor een sleutel.
+ *
+ * Maar NIET afbreken. Ontbreekt één sleutel, dan zou stoppen ook de bronnen
+ * meenemen die het wél doen, en dan verlies je vier metingen om één fout. We
+ * klagen luid, slaan die ene bron over, en laten de rest doorlopen. Dat het
+ * zichtbaar blijft is nu de taak van bronnen.mjs: die faalt na de ronde en
+ * daar krijg je een mail van.
+ */
+function sleutel(naam, waarvoor) {
+  const v = process.env[naam];
+  if (!v) {
+    console.error(
+      `\n  ONTBREKENDE SLEUTEL: ${naam} — ${waarvoor}.\n` +
+        `  Deze bron levert niets tot hij er is. De rest gaat door.\n` +
+        `  Zet hem als repository-secret (Settings > Secrets > Actions), of lokaal:\n` +
+        `    export ${naam}=...\n` +
+        `  Nieuwe sleutels: https://developer.dataplatform.knmi.nl\n`,
+    );
+    return '';
+  }
+  return v;
+}
+
 const KNMI_WMS = 'https://api.dataplatform.knmi.nl/wms/adaguc-server';
 const KNMI_WMS_KEY =
-  process.env.KNMI_WMS_KEY ??
-  'eyJvcmciOiI1ZTU1NGUxOTI3NGE5NjAwMDEyYTNlYjEiLCJpZCI6ImYxNGU2OTY4MjM4NTQ3ZTc4MTcxZWVkZDhhZTdjODQxIiwiaCI6Im11cm11cjEyOCJ9';
+  sleutel('KNMI_WMS_KEY', 'de WMS-sleutel (radarkaart en nowcast)');
 
 function flattenAdaguc(data) {
   const out = [];
@@ -166,8 +198,7 @@ async function fetchKnmiRadar(lat, lon, runEpoch) {
 // metermeting óp T, ongeacht wanneer wij hem ophaalden.
 const KNMI_OPENDATA = 'https://api.dataplatform.knmi.nl/open-data/v1';
 const KNMI_OPENDATA_KEY =
-  process.env.KNMI_OPENDATA_KEY ??
-  'eyJvcmciOiI1ZTU1NGUxOTI3NGE5NjAwMDEyYTNlYjEiLCJpZCI6IjUzYTg1ZDBhMmQ5YzRkYzJiYWNlNzQ4NTQ2Zjk4ODExIiwiaCI6Im11cm11cjEyOCJ9';
+  sleutel('KNMI_OPENDATA_KEY', 'de open-data-sleutel (regenmeters, waarschuwingen)');
 const WATERSCHAP_DS = 'waterboard_raingauge_quality_controlled_all_combined';
 
 async function knmiOpenData(pad, params) {
@@ -328,8 +359,7 @@ async function radarOpMeter(meter, runEpoch) {
 // 2025 — die geeft stilletjes stokoude data. Dit is de opvolger.
 const EDR = 'https://api.dataplatform.knmi.nl/edr/v1/collections/10-minute-in-situ-meteorological-observations';
 const EDR_KEY =
-  process.env.KNMI_EDR_KEY ??
-  'eyJvcmciOiI1ZTU1NGUxOTI3NGE5NjAwMDEyYTNlYjEiLCJpZCI6ImM1MWUzZTFhMmMyZjRiOTJhZTJlZGViOWFmY2RiNzI0IiwiaCI6Im11cm11cjEyOCJ9';
+  sleutel('KNMI_EDR_KEY', 'de EDR-sleutel (10-minuten stationswaarnemingen)');
 
 async function edr(pad, params) {
   const q = params ? `?${new URLSearchParams(params)}` : '';
@@ -413,6 +443,85 @@ async function fetchEdrNabij(lat, lon, runEpoch) {
   return null;
 }
 
+// ── Samen Meten: burgersensoren van het RIVM (14.519 in de index) ───────────
+// Ongekend dicht — gemiddeld 0,9 km tot de dichtstbijzijnde LEVENDE sensor,
+// tegen 8,5 km voor KNMI. Maar er zitten drie flinke haken aan, en die zijn
+// gemeten, niet vermoed:
+//
+//  1. Slechts 25% leeft nog. De mediane sensor in de index meette voor het
+//     laatst anderhalf jaar geleden.
+//  2. Ze verversen PER UUR. Voor een app over de komende twee uur is dat grof.
+//  3. De waarden zijn ongekalibreerd en soms onmogelijk: 0,0% vochtigheid
+//     bestaat niet, en 34% in Rotterdam naast 99,9% in Groningen op hetzelfde
+//     uur is geen weer maar ruis.
+//
+// We loggen het toch, want de vraag "voegt een vochtigheidssprong iets toe aan
+// het voorspellen van regen" is beter te beantwoorden met data dan met een
+// vermoeden. Maar de verwachting is laag, en dat hoort hier te staan.
+const SAMENMETEN = 'https://api-samenmeten.rivm.nl/v1.0';
+let _smIndex = null;
+
+async function samenMetenIndex() {
+  if (_smIndex !== null) return _smIndex;
+  try {
+    const { readFile } = await import('node:fs/promises');
+    _smIndex = JSON.parse(await readFile(new URL('./samenmeten-index.json', import.meta.url), 'utf8'));
+  } catch {
+    _smIndex = [];
+  }
+  return _smIndex;
+}
+
+async function laatsteMeting(datastreamId) {
+  const u = `${SAMENMETEN}/Datastreams(${datastreamId})/Observations?%24top=1&%24orderby=phenomenonTime%20desc`;
+  try {
+    const r = await fetch(u);
+    if (!r.ok) return null;
+    const v = (await r.json()).value ?? [];
+    if (!v.length) return null;
+    return { waarde: Number(v[0].result), tijd: v[0].phenomenonTime };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Dichtstbijzijnde LEVENDE vochtigheidssensor. Loopt de kandidaten op afstand
+ * af tot er één antwoordt met een verse, plausibele waarde.
+ *
+ * 0 en 100 procent worden geweigerd: dat zijn de standaardwaarden van een kapotte
+ * sensor, en een kapotte meting is erger dan geen meting.
+ */
+async function fetchSamenMeten(lat, lon, maxKandidaten = 12, budgetMs = 25000) {
+  const deadline = Date.now() + budgetMs;
+  const idx = await samenMetenIndex();
+  if (!idx.length) return null;
+  const dicht = idx
+    .filter((s) => s.rh)
+    .map((s) => ({ ...s, km: Math.hypot((s.lat - lat) * 111, (s.lon - lon) * 68) }))
+    .sort((a, b) => a.km - b.km)
+    .slice(0, maxKandidaten);
+
+  for (const s of dicht) {
+    // Tijdbudget: rond Amsterdam is de dichtstbijzijnde levende sensor zo ver
+    // weg dat het aflopen van twaalf kandidaten een minuut kostte. Eén ontbrekende
+    // waarneming is dat niet waard — de ronde moet door.
+    if (Date.now() > deadline) break;
+    const m = await laatsteMeting(s.rh);
+    if (!m || !Number.isFinite(m.waarde)) continue;
+    const uurOud = (Date.now() - Date.parse(m.tijd)) / 3600000;
+    if (uurOud > 3) continue;
+    if (m.waarde <= 0.5 || m.waarde >= 99.99) continue;
+    return {
+      station: s.station,
+      afstandKm: Math.round(s.km * 10) / 10,
+      vocht: m.waarde,
+      tijd: m.tijd,
+    };
+  }
+  return null;
+}
+
 async function fetchStations() {
   const r = await fetch('https://data.buienradar.nl/2.0/feed/json');
   const j = await r.json();
@@ -470,6 +579,7 @@ for (const loc of locations) {
     // Radar op de meter zelf: zonder afstand ertussen is dit de zuivere
     // kalibratiefout van de radar.
     const meterRadar = await radarOpMeter(waterschap, runEpoch).catch(() => null);
+    const samenmeten = await fetchSamenMeten(loc.lat, loc.lon).catch(() => null);
     const edrstation = await fetchEdrNabij(loc.lat, loc.lon, runEpoch).catch((e) => {
       console.error(`  EDR ${loc.naam}: ${e.message}`);
       return null;
@@ -483,6 +593,7 @@ for (const loc of locations) {
       station,
       waterschap,
       meterRadar,
+      samenmeten,
       edrstation,
       ours,
       knmi,
