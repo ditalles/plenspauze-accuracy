@@ -35,17 +35,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 340 # < 6u harde limiet
     steps:
-      - uses: actions/checkout@v4
+      # v5 is de versie die op Node 24 draait. v4 deed Node 20, en dat forceert
+      # GitHub nu al naar 24 met een waarschuwing — op een dag stoppen ze daarmee.
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          # Node 20 is dit jaar end-of-life gegaan: geen beveiligingsupdates meer.
+          # 24 is de huidige LTS en gelijk aan waar de acties zelf op draaien.
+          node-version: 24
 
       - name: Zelf-pacende logger (opname elke 10 min, ~5 uur lang)
         # Eigen KNMI-sleutels via secrets, nooit in de broncode: deze repo is
-        # publiek. Zonder KNMI_OPENDATA_KEY valt log.mjs terug op de gedeelde
-        # anonieme sleutel, en die geeft structureel 429 — dan komen de
-        # waterschapsmeters niet binnen en staat de kalibratiemeting stil.
+        # publiek. Elke dienst heeft zijn EIGEN sleutel — open data, WMS en EDR
+        # zijn drie aparte abonnementen. Ontbreekt er één, dan slaat log.mjs die
+        # bron over en klaagt luid; de stap 'Controleer of alle bronnen nog
+        # leveren' hieronder laat de taak vervolgens falen, zodat je er een mail
+        # over krijgt. Zo bleef het in sep/okt 2026 26 dagen onopgemerkt.
         env:
           KNMI_OPENDATA_KEY: ${{ secrets.KNMI_OPENDATA_KEY }}
           KNMI_WMS_KEY: ${{ secrets.KNMI_WMS_KEY }}
