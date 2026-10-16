@@ -66,7 +66,20 @@ jobs:
             git add data/
             if ! git diff --cached --quiet; then
               git commit -q -m "log: opname $(date -u +%Y-%m-%dT%H:%MZ)"
-              git pull --rebase --autostash -q origin "${GITHUB_REF_NAME}" || true
+              # Blijven hangen in een halve rebase is dodelijk: daarna faalt
+              # élke commit en blijft alles op de runner staan. Dus altijd
+              # eerst opruimen, en bij een mislukte rebase terugvallen op een
+              # merge. .gitattributes lost conflicten in data/ vanzelf op
+              # (merge=union), want metingen worden alleen toegevoegd.
+              git rebase --abort 2>/dev/null || true
+              git merge --abort 2>/dev/null || true
+              if ! git pull --rebase --autostash -q origin "${GITHUB_REF_NAME}"; then
+                echo "rebase mislukt — opruimen en samenvoegen"
+                git rebase --abort 2>/dev/null || true
+                git fetch -q origin "${GITHUB_REF_NAME}"
+                git merge -q --no-edit "origin/${GITHUB_REF_NAME}" \
+                  || { echo "ook samenvoegen mislukt"; git merge --abort 2>/dev/null || true; }
+              fi
               git push -q || echo "push faalde, volgende keer opnieuw"
             fi
             N=$((N+1))

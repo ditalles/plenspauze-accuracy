@@ -1,0 +1,9 @@
+# Data is ALLEEN-TOEVOEGEN: elke regel is één meting en wordt nooit gewijzigd.
+# Bij een botsing tussen twee runners wil je dus allebei de regels houden, niet
+# kiezen. 'union' doet precies dat, en lost het conflict vanzelf op.
+#
+# Zonder dit liep het mis: op 16 okt 2026 raakte een runner vast in een halve
+# rebase nadat er tijdens zijn ronde iets anders was gepusht. Vanaf dat moment
+# faalde elke commit ("You are not currently on a branch") en bleven drie uur
+# aan metingen op de wegwerp-runner staan.
+data/*.ndjson merge=union
