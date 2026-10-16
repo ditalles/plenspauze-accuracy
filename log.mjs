@@ -565,14 +565,24 @@ try {
 const records = [];
 for (const loc of locations) {
   try {
+    // Elke bron vangt zijn eigen fout op. Dat is het hele punt van deze opzet:
+    // valt er één om, dan bewaren we nog steeds de vier die het wél deden.
+    //
+    // Hiervoor hadden `ours`, `knmi` en `buienradar` geen vangnet, en gooide
+    // een hik van Open-Meteo de HELE locatie weg — inclusief de radar, de
+    // EDR-meting, de regenmeter en Samen Meten, die allemaal antwoord hadden
+    // gegeven. Gemeten op 16 okt 2026 tijdens een 429-bui: zes van de negen
+    // locaties verdwenen zo, en met elke locatie vier goede metingen.
+    const vang = (naam) => (e) => {
+      console.error(`  ${naam} ${loc.naam}: ${e.message}`);
+      return null;
+    };
     const [ours, knmi, buienradar, knmiradar] = await Promise.all([
-      fetchOpenMeteo(loc.lat, loc.lon, runEpoch, 'knmi_seamless'),
-      fetchOpenMeteo(loc.lat, loc.lon, runEpoch, 'knmi_harmonie_arome_netherlands'),
-      fetchBuienradar(loc.lat, loc.lon, runEpoch),
-      fetchKnmiRadar(loc.lat, loc.lon, runEpoch).catch((e) => {
-        console.error(`  KNMI-radar ${loc.naam}: ${e.message}`);
-        return null;
-      }),
+      fetchOpenMeteo(loc.lat, loc.lon, runEpoch, 'knmi_seamless').catch(vang('model')),
+      fetchOpenMeteo(loc.lat, loc.lon, runEpoch, 'knmi_harmonie_arome_netherlands')
+        .catch(vang('KNMI-model')),
+      fetchBuienradar(loc.lat, loc.lon, runEpoch).catch(vang('Buienradar')),
+      fetchKnmiRadar(loc.lat, loc.lon, runEpoch).catch(vang('KNMI-radar')),
     ]);
     const station = stations.length ? nearestStation(stations, loc.lat, loc.lon) : null;
     const waterschap = meters.length ? nearestMeter(meters, loc.lat, loc.lon) : null;
@@ -600,13 +610,17 @@ for (const loc of locations) {
       buienradar,
       knmiradar,
     });
-    const wet = (arr) => arr.some((p) => p.mAhead >= 0 && p.mAhead <= 120 && p.mmh >= WET_MMH);
+    // '?' betekent hier "niet gemeten", en dat is iets anders dan "droog".
+    const wet = (arr) =>
+      !arr?.length ? '?' : arr.some((p) => p.mAhead >= 0 && p.mAhead <= 120 && p.mmh >= WET_MMH)
+        ? 'REGEN'
+        : 'droog';
     console.log(
       `${loc.naam.padEnd(11)} nu:${station?.regenNu ?? '?'}mm/u ` +
       `(meter ${waterschap ? `${waterschap.mmh}mm/u @${waterschap.afstandKm}km` : '—'}` +
       `${edrstation ? `, EDR ${edrstation.regenNu ?? '?'}mm/u wind ${edrstation.windMs ?? '?'}m/s @${edrstation.afstandKm}km` : ''})  ` +
-      `Plenspauze:${wet(ours) ? 'REGEN' : 'droog'}  KNMI:${wet(knmi) ? 'REGEN' : 'droog'}  ` +
-      `Buienradar:${wet(buienradar) ? 'REGEN' : 'droog'}  KNMIradar:${knmiradar ? (wet(knmiradar) ? 'REGEN' : 'droog') : '?'}`,
+      `Plenspauze:${wet(ours)}  KNMI:${wet(knmi)}  ` +
+      `Buienradar:${wet(buienradar)}  KNMIradar:${wet(knmiradar)}`,
     );
   } catch (e) {
     console.error(`${loc.naam}: mislukt — ${e.message}`);
