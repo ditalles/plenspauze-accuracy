@@ -55,8 +55,31 @@ async function fetchOpenMeteo(lat, lon, runEpoch, model) {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
     `&minutely_15=precipitation,precipitation_probability&models=${model}` +
     `&timezone=Europe%2FAmsterdam&forecast_minutely_15=10`;
-  const r = await fetch(url);
-  const j = await r.json();
+  // Herkansen. Dit was de ENIGE bron zonder, en dat was te zien: op de
+  // GitHub-runner faalden 7 tot 9 van de 18 aanroepen per ronde met 'fetch
+  // failed' — een netwerkfout, geen 429. Vanaf hier lijkt dezelfde API
+  // kerngezond (5 van 5 in 0,2 s), dus het zit in de runner of in hoe
+  // Open-Meteo drukke cloud-adressen behandelt.
+  //
+  // Dat het pas nu opviel, komt doordat een mislukte aanroep eerder de HELE
+  // locatie weggooide. Sinds elke bron zijn eigen fout opvangt, zie je in
+  // plaats van minder records gewoon dat dit veld vaker leeg is.
+  const wacht = [800, 2500, 6000];
+  let j = null;
+  for (let poging = 0; poging <= wacht.length; poging++) {
+    try {
+      const r = await fetch(url);
+      if (r.ok) {
+        j = await r.json();
+        if (j?.minutely_15) break;
+      }
+      j = null;
+    } catch {
+      j = null;
+    }
+    if (poging < wacht.length) await new Promise((res) => setTimeout(res, wacht[poging]));
+  }
+  if (!j?.minutely_15) throw new Error('Open-Meteo gaf na 4 pogingen niets bruikbaars');
   const off = (j.utc_offset_seconds ?? 0) * 1000;
   const { time, precipitation, precipitation_probability } = j.minutely_15;
   return time.map((iso, i) => {

@@ -44,6 +44,9 @@ const BRONNEN = [
   { naam: 'Samen Meten', veld: (d) => !!d.samenmeten, altijd: false },
 ];
 
+/** Hoe vaak een 'altijd'-bron minstens moet leveren voordat we hem gezond noemen. */
+const ONDERGRENS = 0.85;
+
 const grens = Date.now() - UREN * 3600_000;
 const opnames = [];
 for (const f of (await readdir('data')).filter((f) => f.endsWith('.ndjson')).sort().slice(-3)) {
@@ -78,7 +81,11 @@ const alleStil = levend === 0;
 let stil = 0;
 for (const b of tel) {
   const pct = ((b.n / opnames.length) * 100).toFixed(0);
-  const kapot = b.n === 0 || (b.altijd && b.n < opnames.length * 0.5);
+  // 85% en niet 50%: op 18 okt 2026 leverde Open-Meteo nog maar 56% en kwam
+  // dat er net doorheen, terwijl alle andere bronnen op 100% stonden. Een bron
+  // die er altijd hoort te zijn en een op de zeven keer ontbreekt, is stuk —
+  // ook al staat de helft er nog.
+  const kapot = b.n === 0 || (b.altijd && b.n < opnames.length * ONDERGRENS);
   if (kapot) stil++;
   console.log(
     `   ${kapot ? '✗' : '✓'}  ${b.naam.padEnd(26)} ${String(b.n).padStart(5)} / ${opnames.length}  (${pct.padStart(3)}%)` +
